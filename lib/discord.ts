@@ -44,3 +44,22 @@ export function respond(type: number, data?: Record<string, unknown>) {
 export function interactionResponse(type: number, data?: Record<string, unknown>) {
   return { type, data };
 }
+
+export async function fetchAllMembers(api: ReturnType<typeof createApi>, guildId: string) {
+  const members: any[] = [];
+  let after: string | undefined;
+
+  while (true) {
+    const params = new URLSearchParams({ limit: '1000' });
+    if (after) params.set('after', after);
+
+    const batch = await api.get<any[]>(`/guilds/${guildId}/members?${params.toString()}`);
+    if (!batch || batch.length === 0) break;
+
+    members.push(...batch);
+    if (batch.length < 1000) break;
+    after = batch[batch.length - 1].user.id;
+  }
+
+  return members;
+}

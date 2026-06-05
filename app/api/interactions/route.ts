@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import nacl from 'tweetnacl';
-import { createApi, interactionResponse } from '@/lib/discord';
+import { createApi, interactionResponse, fetchAllMembers } from '@/lib/discord';
 import {
   pickMessage,
   checkGuess,
@@ -72,10 +72,9 @@ export async function POST(request: NextRequest) {
       const channelOpt = sub.options?.find((o: any) => o.name === 'channel');
       const specificId = channelOpt?.value;
 
-      const [picked, members] = await Promise.all([
-        pickMessage(guild_id, specificId),
-        api.get<any[]>(`/guilds/${guild_id}/members?limit=100`),
-      ]);
+      const picked = await pickMessage(guild_id, specificId);
+      const allMembers = picked ? await fetchAllMembers(api, guild_id) : [];
+      const humanMembers = allMembers.filter((m: any) => !m.user?.bot);
 
       if (!picked) {
         const existing = await getGameState(guild_id);
@@ -111,8 +110,19 @@ export async function POST(request: NextRequest) {
 
       await setGameState(guild_id, game);
 
-      const shuffled = (members ?? []).sort(() => Math.random() - 0.5).slice(0, 25);
-      const selectOptions = shuffled.map((m: any) => ({
+      const authorMember = humanMembers.find((m: any) => m.user?.id === picked.authorId);
+      const otherMembers = humanMembers.filter((m: any) => m.user?.id !== picked.authorId);
+      const randomOthers = otherMembers
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 24); // Leave room for author
+
+      const finalMembers = [...randomOthers];
+      if (authorMember) {
+        finalMembers.push(authorMember);
+      }
+      finalMembers.sort(() => Math.random() - 0.5);
+
+      const selectOptions = finalMembers.map((m: any) => ({
         label: (
           m.nick || m.user?.global_name || m.user?.username || 'Unknown'
         ).slice(0, 100),
@@ -155,18 +165,14 @@ export async function POST(request: NextRequest) {
           }),
         );
 
-      const result = await checkGuess(guild_id, target);
+      const result = await checkGuess(guild_id, userId, target);
 
       if (result.correct) {
         return json(
           interactionResponse(4, {
-            content: `🎉 <@${target}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
+            content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
           }),
         );
-      }
-
-      if ((result as any).alreadyGuessed) {
-        return json(interactionResponse(4, { content: 'You already guessed!', flags: 64 }));
       }
 
       return json(interactionResponse(4, { content: '❌ Wrong! Try again.', flags: 64 }));
@@ -285,14 +291,14 @@ export async function POST(request: NextRequest) {
         return json(interactionResponse(4, { content: 'This game has already ended.', flags: 64 }));
       }
 
-      const result = await checkGuess(guild_id, selected);
+      const result = await checkGuess(guild_id, userId, selected);
 
       if (result.correct) {
         return json(
           interactionResponse(7, {
-            content: `🎉 <@${selected}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
+            content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
             embeds: [
-              buildRevealEmbed(selected, result.authorName!, result.content!),
+              buildRevealEmbed(game.authorId, result.authorName!, result.content!, `<@${userId}>`),
             ],
             components: [],
           }),

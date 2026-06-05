@@ -124,23 +124,21 @@ export async function startGame(
   return state;
 }
 
-export async function checkGuess(guildId: string, userId: string) {
+export async function checkGuess(guildId: string, guesserId: string, targetId: string) {
   const game = await getGameState(guildId);
   if (!game) return { correct: false, points: 0 };
 
-  if (game.guesserIds.includes(userId)) {
-    return { correct: false, points: 0, alreadyGuessed: true };
-  }
-
-  if (userId === game.authorId) {
+  if (targetId === game.authorId) {
     const attemptNumber = game.guesserIds.length;
     const points = attemptNumber === 0 ? 3 : attemptNumber === 1 ? 2 : 1;
-    await kvAddScore(guildId, userId, points);
+    await kvAddScore(guildId, guesserId, points);
     await deleteGameState(guildId);
     return { correct: true, points, authorName: game.authorName, content: game.content };
   }
 
-  game.guesserIds.push(userId);
+  if (!game.guesserIds.includes(guesserId)) {
+    game.guesserIds.push(guesserId);
+  }
   await setGameState(guildId, game);
   return { correct: false, points: 0 };
 }
