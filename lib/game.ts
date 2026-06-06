@@ -67,6 +67,10 @@ function isBotMessage(msg: any): boolean {
   return msg.author?.bot === true;
 }
 
+function hasLink(text: string): boolean {
+  return /https?:\/\/|www\./i.test(text);
+}
+
 export async function pickMessage(
   guildId: string,
   specificChannelId?: string,
@@ -96,7 +100,7 @@ export async function pickMessage(
     const messages = await fetchMessages(api, channelId, before);
     if (!messages || messages.length === 0) continue;
 
-    const filtered = messages.filter((m) => !isBotMessage(m) && m.content?.length > 0);
+    const filtered = messages.filter((m) => !isBotMessage(m) && m.content?.length > 0 && !hasLink(m.content));
     if (filtered.length === 0) continue;
 
     const msg = pickRandom(filtered);
