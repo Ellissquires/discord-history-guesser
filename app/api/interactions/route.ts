@@ -101,6 +101,7 @@ export async function POST(request: NextRequest) {
         authorName: picked.authorName,
         channelId: picked.channelId,
         messageId: picked.messageId,
+        messageTimestamp: picked.messageTimestamp,
         startedBy: userId,
         startedAt: Date.now(),
         gameChannelId: channel_id,
@@ -168,9 +169,11 @@ export async function POST(request: NextRequest) {
       const result = await checkGuess(guild_id, userId, target);
 
       if (result.correct) {
+        const ts = Math.floor(new Date(result.messageTimestamp!).getTime() / 1000);
+        const dateDisplay = isNaN(ts) ? result.messageTimestamp! : `<t:${ts}:D>`;
         return json(
           interactionResponse(4, {
-            content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
+            content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆\nOriginal message sent: ${dateDisplay}`,
           }),
         );
       }
@@ -298,7 +301,7 @@ export async function POST(request: NextRequest) {
           interactionResponse(7, {
             content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
             embeds: [
-              buildRevealEmbed(game.authorId, result.authorName!, result.content!, `<@${userId}>`),
+              buildRevealEmbed(game.authorId, result.authorName!, result.content!, result.messageTimestamp!, `<@${userId}>`),
             ],
             components: [],
           }),

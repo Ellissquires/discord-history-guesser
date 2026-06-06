@@ -13,6 +13,7 @@ export interface GameState {
   authorName: string;
   channelId: string;
   messageId: string;
+  messageTimestamp: string;
   startedBy: string;
   startedAt: number;
   gameChannelId: string;
@@ -31,8 +32,27 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-async function fetchMessages(api: ReturnType<typeof createApi>, channelId: string) {
-  return api.get<any[]>(`/channels/${channelId}/messages?limit=100`);
+async function fetchMessages(api: ReturnType<typeof createApi>, channelId: string, before?: string) {
+  const params = new URLSearchParams({ limit: '100' });
+  if (before) params.set('before', before);
+  return api.get<any[]>(`/channels/${channelId}/messages?${params.toString()}`);
+}
+
+async function fetchManyMessages(api: ReturnType<typeof createApi>, channelId: string, pages = 5) {
+  const all: any[] = [];
+  let before: string | undefined;
+
+  for (let i = 0; i < pages; i++) {
+    const messages = await fetchMessages(api, channelId, before);
+    if (!messages || messages.length === 0) break;
+
+    all.push(...messages);
+    before = messages[messages.length - 1].id;
+
+    if (messages.length < 100) break;
+  }
+
+  return all;
 }
 
 async function fetchMembers(api: ReturnType<typeof createApi>, guildId: string) {
@@ -72,7 +92,7 @@ export async function pickMessage(
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const channelId = pickRandom(channelIds);
-    const messages = await fetchMessages(api, channelId);
+    const messages = await fetchManyMessages(api, channelId);
     if (!messages || messages.length === 0) continue;
 
     const filtered = messages.filter((m) => !isBotMessage(m) && m.content?.length > 0);
@@ -87,6 +107,7 @@ export async function pickMessage(
       authorName,
       channelId,
       messageId: msg.id,
+      messageTimestamp: msg.timestamp,
     };
   }
 
@@ -113,6 +134,7 @@ export async function startGame(
     authorName: picked.authorName,
     channelId: picked.channelId,
     messageId: picked.messageId,
+    messageTimestamp: picked.messageTimestamp,
     startedBy: userId,
     startedAt: Date.now(),
     gameChannelId,
@@ -133,7 +155,7 @@ export async function checkGuess(guildId: string, guesserId: string, targetId: s
     const points = attemptNumber === 0 ? 3 : attemptNumber === 1 ? 2 : 1;
     await kvAddScore(guildId, guesserId, points);
     await deleteGameState(guildId);
-    return { correct: true, points, authorName: game.authorName, content: game.content };
+    return { correct: true, points, authorName: game.authorName, content: game.content, messageTimestamp: game.messageTimestamp };
   }
 
   if (!game.guesserIds.includes(guesserId)) {
@@ -186,14 +208,19 @@ export function buildRevealEmbed(
   authorId: string,
   authorName: string,
   content: string,
+  messageTimestamp: string,
   guesserName?: string,
 ) {
+  const ts = Math.floor(new Date(messageTimestamp).getTime() / 1000);
+  const dateDisplay = isNaN(ts) ? messageTimestamp : `<t:${ts}:D>`;
+
   return {
     title: 'Answer Revealed',
     description: content,
     color: 0x57f287,
     fields: [
       { name: 'Author', value: `<@${authorId}> (${authorName})`, inline: true },
+      { name: 'Sent', value: dateDisplay, inline: true },
       ...(guesserName
         ? [{ name: 'Guessed by', value: guesserName, inline: true }]
         : []),
