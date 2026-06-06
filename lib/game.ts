@@ -32,27 +32,24 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+const DISCORD_EPOCH = 1420070400000;
+
+function snowflakeFromDate(date: Date): string {
+  const ms = date.getTime();
+  const snowflake = BigInt(ms - DISCORD_EPOCH) << BigInt(22);
+  return snowflake.toString();
+}
+
+function randomSnowflake(): string {
+  const now = Date.now();
+  const randomMs = Math.floor(Math.random() * (now - DISCORD_EPOCH)) + DISCORD_EPOCH;
+  return snowflakeFromDate(new Date(randomMs));
+}
+
 async function fetchMessages(api: ReturnType<typeof createApi>, channelId: string, before?: string) {
   const params = new URLSearchParams({ limit: '100' });
   if (before) params.set('before', before);
   return api.get<any[]>(`/channels/${channelId}/messages?${params.toString()}`);
-}
-
-async function fetchManyMessages(api: ReturnType<typeof createApi>, channelId: string, pages = 5) {
-  const all: any[] = [];
-  let before: string | undefined;
-
-  for (let i = 0; i < pages; i++) {
-    const messages = await fetchMessages(api, channelId, before);
-    if (!messages || messages.length === 0) break;
-
-    all.push(...messages);
-    before = messages[messages.length - 1].id;
-
-    if (messages.length < 100) break;
-  }
-
-  return all;
 }
 
 async function fetchMembers(api: ReturnType<typeof createApi>, guildId: string) {
@@ -90,9 +87,10 @@ export async function pickMessage(
     return null;
   }
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     const channelId = pickRandom(channelIds);
-    const messages = await fetchManyMessages(api, channelId);
+    const before = randomSnowflake();
+    const messages = await fetchMessages(api, channelId, before);
     if (!messages || messages.length === 0) continue;
 
     const filtered = messages.filter((m) => !isBotMessage(m) && m.content?.length > 0);
