@@ -19,6 +19,9 @@ export interface GameState {
   gameChannelId: string;
   guesserIds: string[];
   hintLevel: number;
+  round: number;
+  totalRounds: number;
+  sessionScores: Record<string, number>;
 }
 
 const MAX_CONTENT_LENGTH = 1000;
@@ -117,6 +120,7 @@ export async function startGame(
   gameChannelId: string,
   specificChannelId: string | undefined,
   userId: string,
+  totalRounds: number = 1,
 ) {
   const existing = await getGameState(guildId);
   if (existing) {
@@ -138,6 +142,9 @@ export async function startGame(
     gameChannelId,
     guesserIds: [],
     hintLevel: 0,
+    round: 1,
+    totalRounds,
+    sessionScores: {},
   };
 
   await setGameState(guildId, state);
@@ -151,8 +158,6 @@ export async function checkGuess(guildId: string, guesserId: string, targetId: s
   if (targetId === game.authorId) {
     const attemptNumber = game.guesserIds.length;
     const points = attemptNumber === 0 ? 3 : attemptNumber === 1 ? 2 : 1;
-    await kvAddScore(guildId, guesserId, points);
-    await deleteGameState(guildId);
     return { correct: true, points, authorName: game.authorName, content: game.content, messageTimestamp: game.messageTimestamp };
   }
 
@@ -161,6 +166,75 @@ export async function checkGuess(guildId: string, guesserId: string, targetId: s
   }
   await setGameState(guildId, game);
   return { correct: false, points: 0 };
+}
+
+export async function nextRoundOrEnd(
+  guildId: string,
+  game: GameState,
+  winnerId: string,
+  points: number,
+) {
+  const sessionScores = { ...game.sessionScores };
+  sessionScores[winnerId] = (sessionScores[winnerId] || 0) + points;
+
+  if (game.totalRounds > 1 && game.round < game.totalRounds) {
+    const picked = await pickMessage(guildId);
+    if (!picked) {
+      for (const [uid, pts] of Object.entries(sessionScores)) {
+        await kvAddScore(guildId, uid, pts);
+      }
+      await deleteGameState(guildId);
+      return { ended: true, sessionScores, nextGame: null, error: 'Could not fetch next message. Session ended.' };
+    }
+
+    const nextGame: GameState = {
+      content: picked.content,
+      authorId: picked.authorId,
+      authorName: picked.authorName,
+      channelId: picked.channelId,
+      messageId: picked.messageId,
+      messageTimestamp: picked.messageTimestamp,
+      startedBy: game.startedBy,
+      startedAt: Date.now(),
+      gameChannelId: game.gameChannelId,
+      guesserIds: [],
+      hintLevel: 0,
+      round: game.round + 1,
+      totalRounds: game.totalRounds,
+      sessionScores,
+    };
+
+    await setGameState(guildId, nextGame);
+    return { ended: false, sessionScores, nextGame, error: null };
+  }
+
+  for (const [uid, pts] of Object.entries(sessionScores)) {
+    await kvAddScore(guildId, uid, pts);
+  }
+  await deleteGameState(guildId);
+  return { ended: true, sessionScores, nextGame: null, error: null };
+}
+
+export function buildSessionSummaryEmbed(sessionScores: Record<string, number>, totalRounds: number) {
+  const sorted = Object.entries(sessionScores)
+    .sort(([, a], [, b]) => b - a);
+
+  const description =
+    sorted.length === 0
+      ? 'No points scored this session.'
+      : sorted
+          .map(
+            ([userId, score], i) =>
+              `${i + 1}. <@${userId}> — **${score}** point${score === 1 ? '' : 's'}`,
+          )
+          .join('\n');
+
+  return {
+    title: `Session Complete — ${totalRounds} Rounds`,
+    description,
+    color: 0xfee75c,
+    footer: { text: 'Thanks for playing!' },
+  };
 }
 
 export function getHintText(game: GameState): string {

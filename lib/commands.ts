@@ -16,6 +16,14 @@ export function defineCommands() {
               required: false,
               channel_types: [0],
             },
+            {
+              type: 4,
+              name: 'rounds',
+              description: 'Number of rounds to play in a row (default: 1)',
+              required: false,
+              min_value: 1,
+              max_value: 10,
+            },
           ],
         },
         {

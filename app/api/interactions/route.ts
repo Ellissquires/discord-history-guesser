@@ -4,10 +4,12 @@ import { createApi, interactionResponse, fetchAllMembers } from '@/lib/discord';
 import {
   pickMessage,
   checkGuess,
+  nextRoundOrEnd,
   getHintText,
   buildGameEmbed,
   buildRevealEmbed,
   buildLeaderboardEmbed,
+  buildSessionSummaryEmbed,
   configChannelsFromString,
 } from '@/lib/game';
 import {
@@ -15,6 +17,7 @@ import {
   getScores,
   setGameState,
   deleteGameState,
+  addScore,
   setAllowedChannels,
   getAllowedChannels,
 } from '@/lib/store';
@@ -30,6 +33,50 @@ function json(body: unknown) {
   return new Response(JSON.stringify(body), {
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+async function buildRoundComponents(api: ReturnType<typeof createApi>, guildId: string, game: GameState) {
+  const allMembers = await fetchAllMembers(api, guildId);
+  const humanMembers = allMembers.filter((m: any) => !m.user?.bot);
+
+  const authorMember = humanMembers.find((m: any) => m.user?.id === game.authorId);
+  const otherMembers = humanMembers.filter((m: any) => m.user?.id !== game.authorId);
+  const randomOthers = otherMembers
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 24);
+
+  const finalMembers = [...randomOthers];
+  if (authorMember) {
+    finalMembers.push(authorMember);
+  }
+  finalMembers.sort(() => Math.random() - 0.5);
+
+  const selectOptions = finalMembers.map((m: any) => ({
+    label: (
+      m.nick || m.user?.global_name || m.user?.username || 'Unknown'
+    ).slice(0, 100),
+    value: m.user?.id ?? '',
+    description: `@${(m.user?.username || 'unknown').slice(0, 100)}`,
+  }));
+
+  const embed = buildGameEmbed(game);
+  const components = selectOptions.length
+    ? [
+        {
+          type: 1,
+          components: [
+            {
+              type: 3,
+              custom_id: 'guess_select',
+              placeholder: 'Who wrote this?',
+              options: selectOptions,
+            },
+          ],
+        },
+      ]
+    : undefined;
+
+  return { embed, components };
 }
 
 export async function POST(request: NextRequest) {
@@ -71,10 +118,10 @@ export async function POST(request: NextRequest) {
     if (cmd === 'start') {
       const channelOpt = sub.options?.find((o: any) => o.name === 'channel');
       const specificId = channelOpt?.value;
+      const roundsOpt = sub.options?.find((o: any) => o.name === 'rounds');
+      const totalRounds = roundsOpt?.value ?? 1;
 
       const picked = await pickMessage(guild_id, specificId);
-      const allMembers = picked ? await fetchAllMembers(api, guild_id) : [];
-      const humanMembers = allMembers.filter((m: any) => !m.user?.bot);
 
       if (!picked) {
         const existing = await getGameState(guild_id);
@@ -107,48 +154,17 @@ export async function POST(request: NextRequest) {
         gameChannelId: channel_id,
         guesserIds: [],
         hintLevel: 0,
+        round: 1,
+        totalRounds,
+        sessionScores: {},
       };
 
       await setGameState(guild_id, game);
 
-      const authorMember = humanMembers.find((m: any) => m.user?.id === picked.authorId);
-      const otherMembers = humanMembers.filter((m: any) => m.user?.id !== picked.authorId);
-      const randomOthers = otherMembers
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 24); // Leave room for author
+      const { embed, components } = await buildRoundComponents(api, guild_id, game);
+      const roundInfo = totalRounds > 1 ? `\n*Round 1 of ${totalRounds}*` : '';
 
-      const finalMembers = [...randomOthers];
-      if (authorMember) {
-        finalMembers.push(authorMember);
-      }
-      finalMembers.sort(() => Math.random() - 0.5);
-
-      const selectOptions = finalMembers.map((m: any) => ({
-        label: (
-          m.nick || m.user?.global_name || m.user?.username || 'Unknown'
-        ).slice(0, 100),
-        value: m.user?.id ?? '',
-        description: `@${(m.user?.username || 'unknown').slice(0, 100)}`,
-      }));
-
-      const embed = buildGameEmbed(game);
-      const components = selectOptions.length
-        ? [
-            {
-              type: 1,
-              components: [
-                {
-                  type: 3,
-                  custom_id: 'guess_select',
-                  placeholder: 'Who wrote this?',
-                  options: selectOptions,
-                },
-              ],
-            },
-          ]
-        : undefined;
-
-      return json(interactionResponse(4, { embeds: [embed], components }));
+      return json(interactionResponse(4, { content: roundInfo, embeds: [embed], components }));
     }
 
     // /guess target @user
@@ -169,11 +185,32 @@ export async function POST(request: NextRequest) {
       const result = await checkGuess(guild_id, userId, target);
 
       if (result.correct) {
+        const advance = await nextRoundOrEnd(guild_id, game, userId, result.points);
+
+        if (!advance.ended && advance.nextGame) {
+          const { embed, components } = await buildRoundComponents(api, guild_id, advance.nextGame);
+          const roundInfo = `*Round ${advance.nextGame.round} of ${advance.nextGame.totalRounds}*`;
+          return json(
+            interactionResponse(4, {
+              content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆 (Round ${game.round}/${game.totalRounds})\n${roundInfo}`,
+              embeds: [embed],
+              components,
+            }),
+          );
+        }
+
         const ts = Math.floor(new Date(result.messageTimestamp!).getTime() / 1000);
         const dateDisplay = isNaN(ts) ? result.messageTimestamp! : `<t:${ts}:D>`;
+        const embeds: any[] = [
+          buildRevealEmbed(game.authorId, result.authorName!, result.content!, result.messageTimestamp!, `<@${userId}>`),
+        ];
+        if (game.totalRounds > 1) {
+          embeds.push(buildSessionSummaryEmbed(advance.sessionScores, game.totalRounds));
+        }
         return json(
           interactionResponse(4, {
             content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆\nOriginal message sent: ${dateDisplay}`,
+            embeds,
           }),
         );
       }
@@ -211,11 +248,24 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      if (game.totalRounds > 1 && Object.keys(game.sessionScores).length > 0) {
+        for (const [uid, pts] of Object.entries(game.sessionScores)) {
+          await addScore(guild_id, uid, pts);
+        }
+      }
       await deleteGameState(guild_id);
+
+      const embeds: any[] = [
+        buildRevealEmbed(game.authorId, game.authorName, game.content, game.messageTimestamp),
+      ];
+      if (game.totalRounds > 1) {
+        embeds.push(buildSessionSummaryEmbed(game.sessionScores, game.totalRounds));
+      }
 
       return json(
         interactionResponse(4, {
           content: `The author was <@${game.authorId}> (${game.authorName})\n\nOriginal message:\n${game.content}`,
+          embeds,
         }),
       );
     }
@@ -297,12 +347,30 @@ export async function POST(request: NextRequest) {
       const result = await checkGuess(guild_id, userId, selected);
 
       if (result.correct) {
+        const advance = await nextRoundOrEnd(guild_id, game, userId, result.points);
+
+        if (!advance.ended && advance.nextGame) {
+          const { embed, components } = await buildRoundComponents(api, guild_id, advance.nextGame);
+          const roundInfo = `*Round ${advance.nextGame.round} of ${advance.nextGame.totalRounds}*`;
+          return json(
+            interactionResponse(7, {
+              content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆 (Round ${game.round}/${game.totalRounds})\n${roundInfo}`,
+              embeds: [embed],
+              components,
+            }),
+          );
+        }
+
+        const embeds: any[] = [
+          buildRevealEmbed(game.authorId, result.authorName!, result.content!, result.messageTimestamp!, `<@${userId}>`),
+        ];
+        if (game.totalRounds > 1) {
+          embeds.push(buildSessionSummaryEmbed(advance.sessionScores, game.totalRounds));
+        }
         return json(
           interactionResponse(7, {
-            content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆`,
-            embeds: [
-              buildRevealEmbed(game.authorId, result.authorName!, result.content!, result.messageTimestamp!, `<@${userId}>`),
-            ],
+            content: `🎉 <@${userId}> guessed correctly! **+${result.points}** point${result.points === 1 ? '' : 's'} 🏆 (Final round!)`,
+            embeds,
             components: [],
           }),
         );
